@@ -8,6 +8,8 @@ using System.Windows;
 using System.Windows.Media;
 using System.Windows.Controls;
 using System.Reflection;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
 
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Shell;
@@ -31,58 +33,236 @@ namespace Hacks.VS2012UIUnbreaker
   [PackageRegistration(UseManagedResourcesOnly = true)]
   // This attribute is used to register the information needed to show this package
   // in the Help/About dialog of Visual Studio.
-  [InstalledProductRegistration("#110", "#112", "1.0", IconResourceID = 400)]
+  [InstalledProductRegistration("#110", "#112", "1.1", IconResourceID = 400)]
   [Guid(GuidList.guidVS2012UIUnbreakerPkgString)]
-  //VSConstants.UICONTEXT_NoSolution.ToString()
-  [ProvideAutoLoad("{ADFC4E64-0397-11D1-9F4E-00A0C911004F}")]
-  //Solution exists
-  [ProvideAutoLoad("f1536ef8-92ec-443c-9ed7-fdadf150da82")]
+  [ProvideAutoLoad(Microsoft.VisualStudio.Shell.Interop.UIContextGuids.NoSolution)]
+  [ProvideAutoLoad(Microsoft.VisualStudio.Shell.Interop.UIContextGuids.SolutionExists)]
   public sealed class VS2012UIUnbreakerPackage : Package, IVsSolutionLoadEvents, IVsSolutionEvents
   {
 
-    IntPtr m_oldWinProc = IntPtr.Zero;
-    bool m_insideSetRgn = false;
-    IVsUIShell m_shell = null;
-    IntPtr m_topHWND = IntPtr.Zero;
-    NativeMethods.WndProcDelegate m_winDelg = null;
-
-    PropertyInfo m_glowVis;
-    MethodInfo m_destGlow, m_stopGlowTimer;
-    Window m_wpfWin;
-
-    UIElement m_fakeTitleBar = null;
-
-    IntPtr SubclassWndProc(IntPtr hWnd, NativeMethods.WM msg, IntPtr wParam, IntPtr lParam)
+    public class WinFixer
     {
-      if ((msg == NativeMethods.WM.WINDOWPOSCHANGED || msg == NativeMethods.WM.WINDOWPOSCHANGING) && m_insideSetRgn)
+      IntPtr m_oldWinProc = IntPtr.Zero;
+      bool m_insideSetRgn = false;
+      IntPtr m_topHWND = IntPtr.Zero;
+      NativeMethods.WndProcDelegate m_winDelg = null;
+
+      PropertyInfo m_glowVis;
+      MethodInfo m_destGlow, m_stopGlowTimer;
+      Window m_wpfWin;
+
+      UIElement m_fakeTitleBar = null;
+      VS2012UIUnbreakerPackage m_pkg;
+
+      public WinFixer(VS2012UIUnbreakerPackage pkg, IntPtr h)
       {
-        return NativeMethods.DefWindowProc(hWnd, msg, wParam, lParam);
+        //Trace.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering WinFixer({0})", h.ToString()));
+        m_topHWND = h;
+        m_pkg = pkg;
+        Done = false;
+        ApplyHacks();
       }
 
-      if (msg == NativeMethods.WM.NCPAINT || msg == NativeMethods.WM.NCCREATE || msg == NativeMethods.WM.NCDESTROY || msg == NativeMethods.WM.NCCALCSIZE ||
-        msg == NativeMethods.WM.NCACTIVATE || msg == NativeMethods.WM.NCHITTEST || msg == NativeMethods.WM.NCMOUSEMOVE || msg == NativeMethods.WM.NCMOUSELEAVE || msg == NativeMethods.WM.NCMOUSEHOVER ||
-        msg == NativeMethods.WM.NCLBUTTONDBLCLK || msg == NativeMethods.WM.NCLBUTTONDOWN || msg == NativeMethods.WM.NCLBUTTONUP ||
-        msg == NativeMethods.WM.NCRBUTTONDBLCLK || msg == NativeMethods.WM.NCRBUTTONDOWN || msg == NativeMethods.WM.NCRBUTTONUP ||
-        msg == NativeMethods.WM.NCMBUTTONDBLCLK || msg == NativeMethods.WM.NCMBUTTONDOWN || msg == NativeMethods.WM.NCMBUTTONUP ||
-        msg == NativeMethods.WM.NCXBUTTONDBLCLK || msg == NativeMethods.WM.NCXBUTTONDOWN || msg == NativeMethods.WM.NCXBUTTONUP ||
-        msg == NativeMethods.WM.DWMCOMPOSITIONCHANGED || msg == NativeMethods.WM.DWMCOLORIZATIONCOLORCHANGED || msg == NativeMethods.WM.DWMNCRENDERINGCHANGED)
+      public IntPtr HWnd { get { return m_topHWND; } }
+      public bool Done { get; private set; }
+
+      IntPtr SubclassWndProc(IntPtr hWnd, NativeMethods.WM msg, IntPtr wParam, IntPtr lParam)
       {
-        if (msg == NativeMethods.WM.DWMNCRENDERINGCHANGED && wParam.ToInt64() == 0)
+        if (msg == NativeMethods.WM.CLOSE || msg == NativeMethods.WM.QUIT)
+          Undo();
+
+        if ((msg == NativeMethods.WM.WINDOWPOSCHANGED || msg == NativeMethods.WM.WINDOWPOSCHANGING) && m_insideSetRgn)
         {
-          KillUselessGlow();
-          NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, false);
-          return IntPtr.Zero;
+          return NativeMethods.DefWindowProc(hWnd, msg, wParam, lParam);
         }
 
-        IntPtr r = NativeMethods.DefWindowProc(hWnd, msg, wParam, lParam);
-        return r;
+        if (msg == NativeMethods.WM.NCPAINT || msg == NativeMethods.WM.NCCREATE || msg == NativeMethods.WM.NCDESTROY || msg == NativeMethods.WM.NCCALCSIZE ||
+          msg == NativeMethods.WM.NCACTIVATE || msg == NativeMethods.WM.NCHITTEST || msg == NativeMethods.WM.NCMOUSEMOVE || msg == NativeMethods.WM.NCMOUSELEAVE || msg == NativeMethods.WM.NCMOUSEHOVER ||
+          msg == NativeMethods.WM.NCLBUTTONDBLCLK || msg == NativeMethods.WM.NCLBUTTONDOWN || msg == NativeMethods.WM.NCLBUTTONUP ||
+          msg == NativeMethods.WM.NCRBUTTONDBLCLK || msg == NativeMethods.WM.NCRBUTTONDOWN || msg == NativeMethods.WM.NCRBUTTONUP ||
+          msg == NativeMethods.WM.NCMBUTTONDBLCLK || msg == NativeMethods.WM.NCMBUTTONDOWN || msg == NativeMethods.WM.NCMBUTTONUP ||
+          msg == NativeMethods.WM.NCXBUTTONDBLCLK || msg == NativeMethods.WM.NCXBUTTONDOWN || msg == NativeMethods.WM.NCXBUTTONUP ||
+          msg == NativeMethods.WM.DWMCOMPOSITIONCHANGED || msg == NativeMethods.WM.DWMCOLORIZATIONCOLORCHANGED || msg == NativeMethods.WM.DWMNCRENDERINGCHANGED)
+        {
+          if (msg == NativeMethods.WM.DWMNCRENDERINGCHANGED && wParam.ToInt64() == 0)
+          {
+            KillUselessGlow();
+            NativeMethods.SetWindowRgn(hWnd, IntPtr.Zero, false);
+            return IntPtr.Zero;
+          }
+
+          IntPtr r = NativeMethods.DefWindowProc(hWnd, msg, wParam, lParam);
+          return r;
+        }
+        else
+        {
+          IntPtr r = NativeMethods.CallWindowProc(m_oldWinProc, hWnd, msg, wParam, lParam);
+          return r;
+        }
       }
-      else
+
+      public void Undo()
       {
-        IntPtr r = NativeMethods.CallWindowProc(m_oldWinProc, hWnd, msg, wParam, lParam);
-        return r;
+        if (m_oldWinProc.ToInt64() != 0 && m_topHWND.ToInt64() != 0)
+        {
+          NativeMethods.SetWindowLongPtr(m_topHWND, NativeMethods.GWLP_WNDPROC, m_oldWinProc);
+          HwndSource hs = HwndSource.FromHwnd(m_topHWND);
+          hs.RemoveHook(new HwndSourceHook(ManagedSubClassProc));
+        }
+
+        m_pkg.m_otherWins.Remove(this);
+        if (m_pkg.m_topHWND == this)
+          m_pkg.m_topHWND = null;
+        //if (m_fakeTitleBar != null)
+          //m_fakeTitleBar.Visibility = Visibility.Visible;
       }
+
+
+      //we need to eat these but we can't do it in the native hook since the WPF internals haven't run yet
+      IntPtr ManagedSubClassProc(
+        IntPtr hwnd,
+        int msg2,
+        IntPtr wParam,
+        IntPtr lParam,
+        ref bool handled)
+      {
+
+        NativeMethods.WM msg = (NativeMethods.WM)msg2;
+        if (msg == NativeMethods.WM.WINDOWPOSCHANGED || msg == NativeMethods.WM.WINDOWPOSCHANGING)
+        {
+          handled = true;
+          return NativeMethods.DefWindowProc(hwnd, msg, wParam, lParam);
+        }
+        else
+        {
+
+          handled = false;
+          return IntPtr.Zero;
+        }
+      }
+
+
+      public void ApplyHacks()
+      {
+        HwndSource hs = HwndSource.FromHwnd(m_topHWND);
+        if (hs == null)
+        {
+          Trace.WriteLine("Bail");
+          throw new ArgumentException();
+        }
+
+        m_wpfWin = (Window)hs.RootVisual;
+        Type winType = m_wpfWin.GetType();
+        while (winType != typeof(object))
+        {
+          winType = winType.GetTypeInfo().BaseType;
+          if (winType.GetTypeInfo().Name == "CustomChromeWindow")
+            break;
+        }
+        m_glowVis = winType.GetProperty("IsGlowVisible", BindingFlags.NonPublic | BindingFlags.Instance);
+        m_destGlow = winType.GetMethod("DestroyGlowWindows", BindingFlags.NonPublic | BindingFlags.Instance);
+        m_stopGlowTimer = winType.GetMethod("StopTimer", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        if (m_pkg.m_topHWND != null && !(bool)m_glowVis.GetValue(m_wpfWin))
+        {
+          //Trace.WriteLine("GlowBail");
+          throw new ArgumentException();
+        }
+
+        Done = true;
+
+        hs.AddHook(new HwndSourceHook(ManagedSubClassProc));
+
+        var bs = new StringBuilder(4096);
+        NativeMethods.GetWindowText(m_topHWND, bs, bs.Capacity);
+        Debug.WriteLine(bs.ToString());
+        m_winDelg = new NativeMethods.WndProcDelegate(SubclassWndProc);
+        m_oldWinProc = NativeMethods.SetWindowLongPtr(m_topHWND, NativeMethods.GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(m_winDelg));
+        NativeMethods.SetWindowRgn(m_topHWND, IntPtr.Zero, false);
+        KillUselessGlow();
+
+        FindFakeTitleBar(m_wpfWin);
+        if (m_fakeTitleBar == null)
+          return;
+
+        FrameworkElement quickSearch = FindByName(m_fakeTitleBar as FrameworkElement, "PART_GlobalSearchTitleHost");
+        FrameworkElement quickSearchWeWant = FindByName(m_wpfWin, "PART_GlobalSearchMenuHost");
+        if (quickSearch != null && quickSearchWeWant != null)
+        {
+          DockPanel p1 = quickSearch.Parent as DockPanel;
+          DockPanel p2 = quickSearchWeWant.Parent as DockPanel;
+          p1.Children.Remove(quickSearch);
+          foreach (FrameworkElement f in p2.Children)
+          {
+            Thickness t = f.Margin;
+            t.Bottom = quickSearch.Margin.Bottom;
+            t.Top = quickSearch.Margin.Top;
+            f.Margin = t;
+          }
+          //last one files so we want the right order
+          p2.LastChildFill = false;
+          p2.Children.Add(quickSearch);
+          p2.Children.Remove(quickSearchWeWant);
+          p1.Children.Add(quickSearchWeWant);//jam it here so it lives
+        }
+
+        m_fakeTitleBar.Visibility = Visibility.Collapsed;
+      }
+
+      FrameworkElement FindByName(FrameworkElement root, string name)
+      {
+        if (root == null || root.Name == name)
+          return root;
+
+        int childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < childCount; i++)
+        {
+          DependencyObject o = VisualTreeHelper.GetChild(root, i);
+          FrameworkElement r = FindByName(o as FrameworkElement, name);
+          if (r != null)
+            return r;
+        }
+        return null;
+      }
+
+      void FindFakeTitleBar(DependencyObject root)
+      {
+        if (m_fakeTitleBar != null)
+        {
+          return;
+        }
+
+        int childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < childCount; i++)
+        {
+          DependencyObject o = VisualTreeHelper.GetChild(root, i);
+          string name = o.GetType().GetTypeInfo().Name;
+          if (name == "MainWindowTitleBar" || name == "DragUndockHeader")
+          {
+            m_fakeTitleBar = o as UIElement;
+            return;
+          }
+          if (m_fakeTitleBar == null)
+            FindFakeTitleBar(o);
+          else
+            return;
+        }
+      }
+
+      private void KillUselessGlow()
+      {
+        if (m_glowVis != null)
+          m_glowVis.SetValue(m_wpfWin, false);
+        if (m_destGlow != null)
+          m_destGlow.Invoke(m_wpfWin, new object[] { });
+        if (m_stopGlowTimer != null)
+          m_stopGlowTimer.Invoke(m_wpfWin, new object[] { });
+      }
+
     }
+
+    public WinFixer m_topHWND = null;
+    public List<WinFixer> m_otherWins = new List<WinFixer>();
 
     /// <summary>
     /// Default constructor of the package.
@@ -93,7 +273,7 @@ namespace Hacks.VS2012UIUnbreaker
     /// </summary>
     public VS2012UIUnbreakerPackage()
     {
-      Debug.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering constructor for: {0}", this.ToString()));
+      Trace.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering constructor for: {0}", this.ToString()));
 
       Type suctype = typeof(StringUppercaseConverter);
       FieldInfo sucfi = suctype.GetField("_suppressUppercaseConversion", BindingFlags.NonPublic | BindingFlags.Static);
@@ -114,18 +294,17 @@ namespace Hacks.VS2012UIUnbreaker
     /// </summary>
     protected override void Initialize()
     {
-      Debug.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering Initialize() of: {0}", this.ToString()));
+      Trace.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering Initialize() of: {0}", this.ToString()));
       base.Initialize();
 
 
       EnvDTE80.DTE2 dte = GetService(typeof(SDTE)) as EnvDTE80.DTE2;
-      m_shell = GetService(typeof(IVsUIShell)) as IVsUIShell;
-      if (m_shell != null)
-        m_shell.GetDialogOwnerHwnd(out m_topHWND);
+      TryAndHookup(dte);
 
-      if (HwndSource.FromHwnd(m_topHWND) == null)
+
+
+      if (m_topHWND == null)
       {
-        m_topHWND = IntPtr.Zero;
         dte.Events.DTEEvents.OnStartupComplete += DTEEvents_OnStartupComplete; //too soon
 
         m_solution = ServiceProvider.GlobalProvider.GetService(typeof(SVsSolution)) as IVsSolution2;
@@ -135,158 +314,140 @@ namespace Hacks.VS2012UIUnbreaker
           m_solution.AdviseSolutionEvents(this, out m_solutionEventsCookie);
         }
       }
-      else
-      {
-        ApplyHacks();
-      }
 
+      dte.Events.WindowEvents.WindowCreated += WindowEvents_WindowCreated;
+      dte.Events.WindowEvents.WindowMoved += WindowEvents_WindowMoved;
       dte.Events.DTEEvents.OnBeginShutdown += DTEEvents_OnBeginShutdown;
+
     }
 
+    private void TryAndHookup(EnvDTE80.DTE2 dte)
+    {
+      if (m_topHWND != null)
+        return;
+
+      try
+      {
+        IntPtr hwnd;
+        IVsUIShell s = ServiceProvider.GlobalProvider.GetService(typeof(SVsUIShell)) as IVsUIShell;
+        if (s != null)
+        {
+          s.GetDialogOwnerHwnd(out hwnd);
+          if (hwnd != IntPtr.Zero)
+          {
+            m_topHWND = new WinFixer(this, hwnd);
+            Trace.WriteLine("SVsUIShell worked");
+          }
+        }
+        if (m_topHWND == null)
+        {
+          try
+          {
+            m_topHWND = new WinFixer(this, (IntPtr)dte.MainWindow.HWnd);
+            Trace.WriteLine("MainWindow worked");
+          }
+          catch (NullReferenceException)
+          {
+
+          }
+        }
+      }
+      catch (ArgumentException)
+      {
+
+      }
+
+      if (m_topHWND == null)
+        Trace.WriteLine("Nothing!");
+    }
+
+    
+    void WindowEvents_WindowMoved(EnvDTE.Window Window, int Top, int Left, int Width, int Height)
+    {
+      FindFloaters();
+      foreach (var f in m_otherWins)
+      {
+        if (!f.Done)
+          f.ApplyHacks();
+      }
+    }
+
+    void WindowEvents_WindowCreated(EnvDTE.Window Window)
+    {
+      EnvDTE80.DTE2 dte = GetService(typeof(SDTE)) as EnvDTE80.DTE2;
+      TryAndHookup(dte);
+      FindFloaters();
+    }
+
+    void FindFloaters()
+    {
+      EnvDTE80.DTE2 dte = GetService(typeof(SDTE)) as EnvDTE80.DTE2;
+      string solName = dte.MainWindow.Caption.Split(' ')[0];
+
+      IntPtr hwnd = IntPtr.Zero;
+      IntPtr curWin = IntPtr.Zero;
+      IntPtr curProc = (IntPtr)NativeMethods.GetCurrentProcessId();
+      while ((curWin = NativeMethods.FindWindowEx(IntPtr.Zero, curWin, null, null)) != IntPtr.Zero)
+      {
+        IntPtr windowProcess;
+        uint winThread = NativeMethods.GetWindowThreadProcessId(curWin, out windowProcess);
+        if (windowProcess != curProc)
+          continue;
+
+        StringBuilder windowName = new StringBuilder(4096);
+        NativeMethods.GetWindowText(curWin, windowName, windowName.Capacity);
+        string wnS = windowName.ToString();
+        if (wnS != solName && !wnS.StartsWith(solName + " - "))
+          continue;
+
+        StringBuilder className = new StringBuilder(4096);
+        NativeMethods.GetClassName(curWin, className, className.Capacity);
+        if (className.ToString().StartsWith("HwndWrapper[DefaultDomain;;"))
+        {
+          bool found = false;
+          foreach (var f in m_otherWins)
+          {
+            if (f.HWnd == curWin)
+            {
+              found = true;
+              break;
+            }
+          }
+          if (!found)
+          {
+            hwnd = curWin;
+            break;
+          }
+        }
+
+      }
+      if (hwnd == IntPtr.Zero)
+        return;
+
+      try
+      {
+        m_otherWins.Add(new WinFixer(this, hwnd));
+      }
+      catch (ArgumentException)
+      {
+
+      }
+    }
+  
 
     void DTEEvents_OnBeginShutdown()
     {
-      if (m_oldWinProc.ToInt64() != 0 && m_topHWND.ToInt64() != 0)
-      {
-        NativeMethods.SetWindowLongPtr(m_topHWND, NativeMethods.GWLP_WNDPROC, m_oldWinProc);
-        HwndSource hs = HwndSource.FromHwnd(m_topHWND);
-        hs.RemoveHook(new HwndSourceHook(ManagedSubClassProc));
-      }
-      if (m_fakeTitleBar != null)
-        m_fakeTitleBar.Visibility = Visibility.Visible;
+      if (m_topHWND != null)
+        m_topHWND.Undo();
     }
 
-    //we need to eat these but we can't do it in the native hook since the WPF internals haven't run yet
-    IntPtr ManagedSubClassProc(
-      IntPtr hwnd,
-      int msg2,
-      IntPtr wParam,
-      IntPtr lParam,
-      ref bool handled)
-    {
-
-      NativeMethods.WM msg = (NativeMethods.WM)msg2;
-      if (msg == NativeMethods.WM.WINDOWPOSCHANGED || msg == NativeMethods.WM.WINDOWPOSCHANGING)
-      {
-        handled = true;
-        return NativeMethods.DefWindowProc(hwnd, msg, wParam, lParam);
-      }
-      else
-      {
-
-        handled = false;
-        return IntPtr.Zero;
-      }
-    }
-
+    
     void DTEEvents_OnStartupComplete()
     {
-      ApplyHacks();
-    }
-
-    private void ApplyHacks()
-    {
-      if (m_topHWND.ToInt64() != 0)
-        return; //already done
-
-      m_shell = GetService(typeof(IVsUIShell)) as IVsUIShell;
-      m_shell.GetDialogOwnerHwnd(out m_topHWND);
-
-      HwndSource hs = HwndSource.FromHwnd(m_topHWND);
-      hs.AddHook(new HwndSourceHook(ManagedSubClassProc));
-
-      m_wpfWin = (Window)hs.RootVisual;
-      Type winType = m_wpfWin.GetType();
-      while (winType != typeof(object))
-      {
-        winType = winType.GetTypeInfo().BaseType;
-        if (winType.GetTypeInfo().Name == "CustomChromeWindow")
-          break;
-      }
-      m_glowVis = winType.GetProperty("IsGlowVisible", BindingFlags.NonPublic | BindingFlags.Instance);
-      m_destGlow = winType.GetMethod("DestroyGlowWindows", BindingFlags.NonPublic | BindingFlags.Instance);
-      m_stopGlowTimer = winType.GetMethod("StopTimer", BindingFlags.NonPublic | BindingFlags.Instance);
-
-      var bs = new StringBuilder(4096);
-      NativeMethods.GetWindowText(m_topHWND, bs, bs.Capacity);
-      Debug.WriteLine(bs.ToString());
-      m_winDelg = new NativeMethods.WndProcDelegate(SubclassWndProc);
-      m_oldWinProc = NativeMethods.SetWindowLongPtr(m_topHWND, NativeMethods.GWLP_WNDPROC, Marshal.GetFunctionPointerForDelegate(m_winDelg));
-      NativeMethods.SetWindowRgn(m_topHWND, IntPtr.Zero, false);
-      KillUselessGlow();
-
-      FindFakeTitleBar(m_wpfWin);
-      FrameworkElement quickSearch = FindByName(m_fakeTitleBar as FrameworkElement, "PART_GlobalSearchTitleHost");
-      FrameworkElement quickSearchWeWant = FindByName(m_wpfWin, "PART_GlobalSearchMenuHost");
-
-      DockPanel p1 = quickSearch.Parent as DockPanel;
-      DockPanel p2 = quickSearchWeWant.Parent as DockPanel;
-      p1.Children.Remove(quickSearch);
-      foreach (FrameworkElement f in p2.Children)
-      {
-        Thickness t = f.Margin;
-        t.Bottom = quickSearch.Margin.Bottom;
-        t.Top = quickSearch.Margin.Top;
-        f.Margin = t;
-      }
-      //last one files so we want the right order
-      p2.LastChildFill = false;
-      p2.Children.Add(quickSearch);
-      p2.Children.Remove(quickSearchWeWant);
-      p1.Children.Add(quickSearchWeWant);//jam it here so it lives
-
-      m_fakeTitleBar.Visibility = Visibility.Collapsed;
-
-      StopListeningForSolutionEvents();
-    }
-
-    FrameworkElement FindByName(FrameworkElement root, string name)
-    {
-      if (root == null || root.Name == name)
-        return root;
-
-      int childCount = VisualTreeHelper.GetChildrenCount(root);
-      for (int i = 0; i < childCount; i++)
-      {
-        DependencyObject o = VisualTreeHelper.GetChild(root, i);
-        FrameworkElement r = FindByName(o as FrameworkElement, name);
-        if (r != null)
-          return r;
-      }
-      return null;
-    }
-
-    void FindFakeTitleBar(DependencyObject root)  
-    { 
-      if (m_fakeTitleBar != null)
-      {
-        return;
-      }
-      
-      int childCount = VisualTreeHelper.GetChildrenCount(root);  
-      for (int i = 0; i < childCount; i++)  
-      {
-        DependencyObject o = VisualTreeHelper.GetChild(root, i);
-        if (o.GetType().GetTypeInfo().Name == "MainWindowTitleBar")
-        {
-          m_fakeTitleBar = o as UIElement;
-          return;
-        }
-        if (m_fakeTitleBar == null)
-          FindFakeTitleBar(o);
-        else
-          return;
-      }  
-    }  
-
-    private void KillUselessGlow()
-    {
-      if (m_glowVis != null)
-        m_glowVis.SetValue(m_wpfWin, false);
-      if (m_destGlow != null)
-        m_destGlow.Invoke(m_wpfWin, new object[] { });
-      if (m_stopGlowTimer != null)
-        m_stopGlowTimer.Invoke(m_wpfWin, new object[] { });
+      Trace.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering DTEEvents_OnStartupComplete() of: {0}", this.ToString()));
+      EnvDTE80.DTE2 dte = GetService(typeof(SDTE)) as EnvDTE80.DTE2;
+      TryAndHookup(dte);
+      FindFloaters();
     }
 
     #endregion
@@ -315,7 +476,7 @@ namespace Hacks.VS2012UIUnbreaker
 
     public int OnBeforeOpenSolution(string pszSolutionFilename)
     {
-      ApplyHacks();
+      DTEEvents_OnStartupComplete();
       return VSConstants.S_OK;
     }
 
@@ -388,7 +549,7 @@ namespace Hacks.VS2012UIUnbreaker
 
     public int OnQueryCloseSolution(object pUnkReserved, ref int pfCancel)
     {
-      throw new NotImplementedException();
+      return VSConstants.S_OK;
     }
 
     public int OnQueryUnloadProject(IVsHierarchy pRealHierarchy, ref int pfCancel)

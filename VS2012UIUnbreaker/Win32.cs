@@ -948,7 +948,13 @@ namespace Hacks.VS2012UIUnbreaker
         return new IntPtr(SetWindowLong32(hWnd, nIndex, dwNewLong.ToInt32()));
     }
 
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
     public static readonly int GWLP_WNDPROC = -4;
+    public static readonly int GWL_STYLE = -16;
+    public static readonly int GWL_EXSTYLE = -20;
+    public static readonly int WS_EX_LAYERED = 0x00080000;
 
     [DllImport("user32.dll")]
     public static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, WM Msg, IntPtr wParam, IntPtr lParam);
@@ -956,6 +962,51 @@ namespace Hacks.VS2012UIUnbreaker
 
     [DllImport("user32.dll")]
     public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string className,  string windowTitle);
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName,int nMaxCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out IntPtr lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    public static extern Int32 GetCurrentProcessId();
+
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Rect
+    {
+      public int Left;
+      public int Top;
+      public int Right;
+      public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct GuiThreadInfo
+    {
+      public int cbSize;
+      public uint flags;
+      public IntPtr hwndActive;
+      public IntPtr hwndFocus;
+      public IntPtr hwndCapture;
+      public IntPtr hwndMenuOwner;
+      public IntPtr hwndMoveSize;
+      public IntPtr hwndCaret;
+      public Rect rcCaret;
+    }
+
+    public static readonly uint GUI_INMOVESIZE = 0x2;
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo lpgui);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetLayeredWindowAttributes(IntPtr hwnd, out uint crKey, out byte bAlpha, out uint dwFlags);
     
   }
 }
