@@ -185,8 +185,10 @@ namespace Hacks.VS2012UIUnbreaker
         if (m_fakeTitleBar == null)
           return;
 
+       
         FrameworkElement quickSearch = FindByName(m_fakeTitleBar as FrameworkElement, "PART_GlobalSearchTitleHost");
         FrameworkElement quickSearchWeWant = FindByName(m_wpfWin, "PART_GlobalSearchMenuHost");
+        //VS2012
         if (quickSearch != null && quickSearchWeWant != null)
         {
           DockPanel p1 = quickSearch.Parent as DockPanel;
@@ -204,6 +206,43 @@ namespace Hacks.VS2012UIUnbreaker
           p2.Children.Add(quickSearch);
           p2.Children.Remove(quickSearchWeWant);
           p1.Children.Add(quickSearchWeWant);//jam it here so it lives
+        }
+        else
+        {
+          //VS2013
+          FrameworkElement titleBarControls = FindByName(m_fakeTitleBar as FrameworkElement, "PART_TitleBarFrameControlContainer");
+          FrameworkElement accountInfo = FindByName(m_wpfWin, "PART_MenuBarFrameControlContainer");
+          if (titleBarControls != null && accountInfo != null)
+          {
+            DockPanel tbDP = titleBarControls.Parent as DockPanel;
+            DockPanel menuDP = accountInfo.Parent as DockPanel;
+            foreach (FrameworkElement f in menuDP.Children)
+            {
+              Thickness t = f.Margin;
+              t.Bottom = titleBarControls.Margin.Bottom;
+              t.Top = titleBarControls.Margin.Top;
+              f.Margin = t;
+              if (f is ContentPresenter)
+              {
+                ContentPresenter cp = f as ContentPresenter;
+                FrameworkElement vsMenu = VisualTreeHelper.GetChild(cp, 0) as FrameworkElement;
+                if (vsMenu != null)
+                {
+                  t = vsMenu.Margin;
+                  t.Top = 4;
+                  vsMenu.Margin = t;
+                }
+
+              }
+            }
+            Thickness t2 = accountInfo.Margin;
+            t2.Top = 2;
+            accountInfo.Margin = t2;
+
+            tbDP.Children.Remove(titleBarControls);
+            menuDP.Children.Insert(menuDP.Children.IndexOf(accountInfo), titleBarControls);
+
+          }
         }
 
         m_fakeTitleBar.Visibility = Visibility.Collapsed;
@@ -274,11 +313,15 @@ namespace Hacks.VS2012UIUnbreaker
     public VS2012UIUnbreakerPackage()
     {
       Trace.WriteLine(string.Format(CultureInfo.CurrentCulture, "Entering constructor for: {0}", this.ToString()));
-
-      Type suctype = typeof(StringUppercaseConverter);
-      FieldInfo sucfi = suctype.GetField("_suppressUppercaseConversion", BindingFlags.NonPublic | BindingFlags.Static);
-      if (sucfi != null)
-        sucfi.SetValue(null, new bool?(true));
+      foreach (Assembly ass in AppDomain.CurrentDomain.GetAssemblies())
+      {
+        Type suctype = ass.GetType("Microsoft.VisualStudio.PlatformUI.StringUppercaseConverter");
+        if (suctype == null)
+          continue;
+        FieldInfo sucfi = suctype.GetField("_suppressUppercaseConversion", BindingFlags.NonPublic | BindingFlags.Static);
+        if (sucfi != null)
+          sucfi.SetValue(null, new bool?(true));
+      }
     }
 
 
